@@ -1,0 +1,176 @@
+================================================================
+실습 데이터 소개 (시계열)
+병원 호흡기 입원 예측 (CDC NHSN Weekly Hospital Respiratory Data)
+================================================================
+
+2026 하계 AI 특강 · Day 1 AutoML
+Applied AI & Computer Vision Lab · Sungkyunkwan University
+
+
+----------------------------------------------------------------
+1. 개요
+----------------------------------------------------------------
+
+- 내용: 미국 병원 주간 호흡기(COVID/독감/RSV) 입원·병상 현황
+- 출처: CDC NHSN (data.cdc.gov, ID: ua7e-t2fy)
+- 규모: 20,837행 · 322열 · 2020-08 ~ 2026-07 (311주)
+- 지리: 주 56 + HHS권역 10 + 전국
+- 유형: 시계열 예측 (회귀)
+- 예측 대상: Total Influenza Admissions (권장)
+
+
+----------------------------------------------------------------
+2. 왜 이 문제인가
+----------------------------------------------------------------
+
+- 입원 수요 예측 → 병상·인력 사전 배치
+- 강의 51p 응급실 입원 예측과 직접 대응
+- 실제 정부 통계의 복잡성(컬럼 322, 쉼표, 보고율 변동) 경험
+- NWSS 하수 데이터와 결합 실습 가능 (공변량)
+
+
+----------------------------------------------------------------
+3. 컬럼 구성 (322열 — 명명 규칙으로 파악)
+----------------------------------------------------------------
+
+컬럼이 322개지만 개별 암기는 불필요. 아래 '조립 규칙'을
+이해하면 필요한 컬럼을 이름으로 찾을 수 있다.
+
+[ 식별 컬럼 (문자열 3개) ]
+- Week Ending Date            주 종료일 (토요일)
+- Geographic aggregation      지리 (AL … 56개 / Region 1~10 / USA)
+- Respiratory Virus Season    시즌 (예: "2024-2025")
+
+[ 나머지 319열의 조립 규칙 ]
+
+  「지표유형」 + 「질환」 + 「대상」 조합으로 이름이 만들어진다.
+
+  ① 지표유형 (접두)
+     Number of ...                    절대 개수
+     Total ...                        합계
+     Percent ...                      비율(%)
+     Number Hospitals Reporting ...   보고 병원 수
+     Percent Hospitals Reporting ...  보고 병원 비율 ← 품질지표
+     Absolute/Percent Change ... from Prior Week  전주 대비 변화
+     ... per 100,000 population        인구 10만명당
+     Cumulative Seasonal Total ...     시즌 누적
+
+  ② 질환
+     COVID-19 / Influenza / RSV
+
+  ③ 대상
+     병상: Inpatient Beds / ICU Beds
+     연령: Adult / Pediatric / 0-4 / 5-17 / 18-49 /
+           50-64 / 65-74 / 75+ / unknown age
+
+  예시:
+    "Total Influenza Admissions"           독감 신규 입원 합계
+    "Number of Adult Influenza Admissions, 50-64 years"
+                                           성인 50-64세 독감 입원
+    "Percent ICU Beds Occupied by Influenza Patients"
+                                           독감 환자의 ICU 점유율
+    "Percent Hospitals Reporting Influenza Admissions"
+                                           독감 입원 보고 병원 비율
+
+[ 실습에 쓸 최소 컬럼 (322개 중 4개면 충분) ]
+- Total Influenza Admissions              독감 신규 입원 → target
+- Percent Hospitals Reporting Influenza Admissions
+                                          보고율 → 품질·구조단절 확인
+- Number of Inpatient Beds                병상 수 → 공변량 후보
+- Respiratory Virus Season                시즌 → 공변량 후보
+
+[ 타깃 후보 (신규 입원) ]
+- Total Influenza Admissions   독감 (결측 4%, 계절성 뚜렷) 권장
+- Total COVID-19 Admissions    코로나 (최대/중앙 10배, 대유행 단절)
+- Total RSV Admissions         RSV (결측 60%, 부적합)
+
+[ 주요 컬럼 위치 (참고, 0-기준) ]
+- 2~13:   병상 수 (일반/ICU × 성인/소아)
+- 14~31:  입원 중 환자 수 (질환별)
+- 32~61:  신규 입원 (질환 × 연령) ← 51번이 Total Influenza
+- 62~75:  점유율(%)
+- 76~129: 보고 병원 수·비율
+- 157~183: 인구 10만명당
+- 317~321: 시즌·시즌 누적
+
+※ 컬럼명에 줄바꿈·이중공백 섞인 것 있음 → 5절 ③
+
+
+----------------------------------------------------------------
+4. 불러오기
+----------------------------------------------------------------
+
+    import pandas as pd
+    from autogluon.timeseries import TimeSeriesDataFrame
+
+    df = pd.read_csv("hrd.csv", low_memory=False,
+                     thousands=",")            # 5절 ① 필수
+
+    cols = ["Week Ending Date","Geographic aggregation",
+            "Total Influenza Admissions"]
+    g = df["Geographic aggregation"]
+    sub = df[g.str.startswith("Region")][cols].copy()   # 권역 10개
+    sub.columns = ["timestamp","item_id","target"]
+    sub["timestamp"] = pd.to_datetime(sub["timestamp"])
+
+    ts = TimeSeriesDataFrame.from_data_frame(
+        sub, id_column="item_id", timestamp_column="timestamp")
+    ts = ts.convert_frequency(freq="W-SAT")
+
+
+----------------------------------------------------------------
+5. 주의
+----------------------------------------------------------------
+
+[ 오류가 나는 것 ]
+
+① 천 단위 쉼표 → 숫자가 문자열로 (가장 중요)
+   증상: "1,110" 형태라 thousands 없으면 범주형 인식·학습 불가
+   해결:
+        df = pd.read_csv("hrd.csv", low_memory=False,
+                         thousands=",")
+        print(df.dtypes.value_counts())   # 문자열 3개면 정상
+
+
+[ 오류는 없지만 잘못 학습되는 것 ]
+
+② 보고 의무 변화 → 구조적 단절 (핵심)
+   증상: 보고율 2023년 93.8% → 2024년 61.7% → 2025년 91.8%
+         2024년 낮은 값이 실제 감소인지 보고 감소인지 구분 안 됨
+   해결 (안정 기간만, 또는 보고율을 공변량으로):
+        # 예: 2024 자발보고 기간 제외
+        df = df[~df["Week Ending Date"].between(
+                "2024-05-01","2024-10-31")]
+   확인:
+        usa = df[df["Geographic aggregation"]=="USA"]
+        usa.set_index("Week Ending Date")[
+          "Percent Hospitals Reporting Influenza Admissions"].plot()
+
+③ 지리 단위 섞지 말 것
+   증상: 전국=주 합계에 가까움 → 함께 넣으면 중복·스케일 상충
+   해결: 한 층위만 (위 4번은 Region만)
+
+④ 타깃 선택 주의
+   - Influenza(결측 4%, 계절성 뚜렷) 권장
+   - COVID(최대/중앙 10배, 구조단절) · RSV(결측 60%) 주의
+
+
+[ EDA / 판단 참고 ]
+
+⑤ freq="W-SAT" (토요일 종료 주간)
+⑥ 집계 불필요 (이미 주간)
+⑦ 컬럼명에 줄바꿈 포함된 것 있음 → df.columns.tolist()로 확인
+
+
+----------------------------------------------------------------
+6. 출처
+----------------------------------------------------------------
+
+- CDC Open Data, ID ua7e-t2fy
+  https://data.cdc.gov/Public-Health-Surveillance/
+    Weekly-Hospital-Respiratory-Data-HRD-Metrics-by-Ju/ua7e-t2fy
+- 출처: CDC National Healthcare Safety Network (NHSN)
+- 라이선스: U.S. Government Work (제약 없음)
+- ※ 유사 데이터셋 주의: mpgq-jmmr(Preliminary)와 구분
+
+================================================================

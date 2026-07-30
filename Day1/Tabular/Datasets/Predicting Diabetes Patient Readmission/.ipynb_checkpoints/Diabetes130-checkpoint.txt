@@ -1,0 +1,120 @@
+================================================================
+실습 데이터 소개
+당뇨 환자 재입원 예측 (Diabetes 130-US Hospitals)
+================================================================
+
+2026 하계 AI 특강 · Day 1 AutoML
+Applied AI & Computer Vision Lab · Sungkyunkwan University
+
+
+----------------------------------------------------------------
+1. 개요
+----------------------------------------------------------------
+
+- 내용: 미국 130개 병원의 당뇨 환자 입원 기록(1999~2008)
+- 출처: UCI #296 (Strack et al. 2014)
+- 규모: 101,766행 · 50열
+- 유형: 분류 (이진 권장)
+- 예측 대상: readmitted (<30 / >30 / NO)
+
+
+----------------------------------------------------------------
+2. 왜 이 문제인가
+----------------------------------------------------------------
+
+- 30일 내 재입원 위험 환자 선별 → 퇴원 관리·자원 배치
+- 강의 사례 연결: 51p 응급실 입원 수요 예측
+- 실제 전자의무기록 (누수·결측·범주 등 실전 과제 다수)
+
+
+----------------------------------------------------------------
+3. 컬럼 구성 (50열, 주요만)
+----------------------------------------------------------------
+
+- 식별: encounter_id, patient_nbr(같은 환자 반복)
+- 환자: race, gender, age(구간 문자열), weight(결측 대부분)
+- 입원: admission_type_id, discharge_disposition_id,
+        admission_source_id (숫자 코드=범주)
+- 입원 중: time_in_hospital, num_lab_procedures,
+           num_medications (누수 주의)
+- 이전 이용: number_outpatient/emergency/inpatient
+- 진단: diag_1/2/3 (ICD 코드, 수백 종)
+- 검사: max_glu_serum, A1Cresult (결측=미시행)
+- 투약: metformin, insulin 등 23종
+- 예측 대상: readmitted
+
+
+----------------------------------------------------------------
+4. 불러오기
+----------------------------------------------------------------
+
+- 결측이 '?' 문자 → na_values 지정 필수
+
+    import pandas as pd
+
+    df = pd.read_csv("diabetic_data.csv", na_values="?",
+                     low_memory=False)   # payer_code 혼합타입 경고 방지
+    print(df.shape)          # (101766, 50)
+
+
+----------------------------------------------------------------
+5. 주의
+----------------------------------------------------------------
+
+[ 오류가 나는 것 ]
+
+① 문자로 위장한 결측 '?'
+   증상: na_values 없으면 결측이 0건으로 나옴
+   해결: pd.read_csv(..., na_values="?")
+
+[ 오류는 없지만 잘못 학습되는 것 ]
+
+② 타깃 원본 열을 남기면 극단적 누수
+   해결 (이진 타깃 만들고 원본 제거):
+        df["readmit_30d"] = (df["readmitted"]=="<30").astype(int)
+        df = df.drop(columns=["readmitted"])
+
+③ 누수 변수 (판단 필요)
+   증상: time_in_hospital, num_lab_procedures 등은
+         퇴원 시점에야 확정 → 입원 초기 예측엔 못 씀
+   해결: 목적이 '입원 초기 선별'이면 제거
+        df = df.drop(columns=["time_in_hospital",
+              "num_lab_procedures","num_procedures","num_medications"])
+
+④ 숫자로 코딩된 범주
+   해결:
+        for c in ["admission_type_id","discharge_disposition_id",
+                  "admission_source_id"]:
+            df[c] = df[c].astype("category")
+
+⑤ 같은 환자 반복 (patient_nbr) → 환자 단위 분할
+        ids = df["patient_nbr"].unique()
+        tr = pd.Series(ids).sample(frac=0.8, random_state=42)
+        train = df[df["patient_nbr"].isin(tr)]
+        test  = df[~df["patient_nbr"].isin(tr)]
+        train = train.drop(columns=["encounter_id","patient_nbr"])
+        test  = test.drop(columns=["encounter_id","patient_nbr"])
+
+[ EDA / 판단 참고 ]
+
+⑥ 결측 과다 컬럼 제거 검토 (실측 결측률)
+   weight 97% · max_glu_serum 95% · A1Cresult 83%
+   medical_specialty 49% · payer_code 40%
+   ※ 검사(max_glu_serum·A1Cresult)는 '미시행'이라 삭제 대신
+     "미검사" 범주로 두는 것도 방법
+⑦ 사망·호스피스 퇴원 행은 재입원 불가 → 제외 검토
+   (IDS_mapping.csv에서 해당 코드 확인)
+⑧ 불균형 → eval_metric="roc_auc" 등
+
+
+----------------------------------------------------------------
+6. 출처
+----------------------------------------------------------------
+
+- UCI #296 "Diabetes 130-US Hospitals for Years 1999-2008"
+  https://archive.ics.uci.edu/dataset/296/
+- 원 논문: Strack et al. (2014), BioMed Research International
+- 함께 제공: IDS_mapping.csv (코드 대응표)
+- 라이선스: CC BY 4.0
+
+================================================================

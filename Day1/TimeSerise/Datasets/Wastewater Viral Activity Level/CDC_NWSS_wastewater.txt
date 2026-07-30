@@ -1,0 +1,149 @@
+================================================================
+실습 데이터 소개 (시계열)
+하수 바이러스 활동 수준 (CDC NWSS Wastewater Viral Activity)
+================================================================
+
+2026 하계 AI 특강 · Day 1 AutoML
+Applied AI & Computer Vision Lab · Sungkyunkwan University
+
+
+----------------------------------------------------------------
+1. 개요
+----------------------------------------------------------------
+
+- 내용: 미국 하수처리장별 바이러스 활동 수준 주간 시계열
+        (SARS-CoV-2 / Influenza A / RSV)
+- 출처: CDC NWSS (data.cdc.gov, ID: atcp-73re)
+- 파일: nwss_wastewater_40sites.csv (실습용 축소본)
+- 규모: 23,301행 · 7열 · 지점 40개 · 3개 병원체
+        2022-01 ~ 2026-07 (주간) · WVAL 결측 0
+- 유형: 시계열 예측 (회귀)
+- 예측 대상: Site_WVAL (하수 바이러스 활동 수준, 연속값)
+- 특징: 지점 단위 long 형식 · 다중 시계열 · 병원체 비교 가능
+
+
+----------------------------------------------------------------
+2. 왜 이 문제인가
+----------------------------------------------------------------
+
+- 하수는 임상 검사보다 먼저 확산 탐지 (조기 경보)
+  → 감염자가 병원 가기 전, 무증상이어도 바이러스 배출
+- 지점별 유행 수준을 미리 파악 → 방역·의료 자원 계획
+- 강의 사례 연결: 51p 응급실 수요, 17p 기후·보건 재해 탐지
+- 다중 시계열(지점별) → 지역 vs 전역 모델 비교 (63~64p)
+- 병원체 3종 → 계절성·예측 난도 비교 실습
+
+
+----------------------------------------------------------------
+3. 컬럼 구성 (7열)
+----------------------------------------------------------------
+
+[ 시계열 3요소 ]
+- Site               하수처리장 지점 ("ID:113" 형태) → item_id
+- Week_End           주 종료일 (예: 2022-09-03) → timestamp
+- Site_WVAL          바이러스 활동 수준 (연속값) → target
+- Pathogen_Target    병원체 (SARS-CoV-2 / Influenza A virus / RSV)
+                     → 병원체별로 시계열이 나뉨 (필터 필요, 5절 ①)
+
+[ 지점 정보 ]
+- State/Territory    주 (축소본은 위스콘신·캘리포니아 등 8개 주)
+- Population_Served  담당 인구 (숫자로 변환 완료)
+
+[ 참고·품질 ]
+- Site_WVAL_Category 5단계 등급 (Very Low ~ Very High)
+                     → WVAL을 구간화. 분류 실습용으로도 가능
+
+※ 원본은 51만 행·1,760지점. 이 축소본은 세 병원체 모두
+  관측이 긴 지점 40개만 선별 (SARS 180주·독감/RSV 100주 이상).
+※ 원본에 주/권역/전국 집계는 없음. 전부 지점(Site) 단위.
+
+
+----------------------------------------------------------------
+4. 불러오기
+----------------------------------------------------------------
+
+    import pandas as pd
+    from autogluon.timeseries import TimeSeriesDataFrame
+
+    df = pd.read_csv("nwss_wastewater_40sites.csv",
+                     parse_dates=["Week_End"])
+    print(df.shape)          # (23301, 7)
+
+    # 병원체 하나 선택 (독감 권장)
+    sub = df[df["Pathogen_Target"] == "Influenza A virus"].copy()
+
+    # 3열 형식으로
+    ts_df = sub.rename(columns={
+        "Site": "item_id", "Week_End": "timestamp",
+        "Site_WVAL": "target",
+    })[["item_id", "timestamp", "target"]]
+
+    ts = TimeSeriesDataFrame.from_data_frame(
+        ts_df, id_column="item_id", timestamp_column="timestamp")
+    ts = ts.convert_frequency(freq="W-SAT")   # 주 종료일 토요일
+
+- 축소본은 WVAL·인구가 이미 숫자로 변환됨 (원본은 쉼표 문자열)
+
+
+----------------------------------------------------------------
+5. 주의
+----------------------------------------------------------------
+
+[ 오류가 나는 것 ]
+
+① 병원체가 한 컬럼에 섞여 있음
+   증상: Pathogen_Target 필터 없이 쓰면 3종이 한 시계열에 뒤섞임
+         (같은 지점·같은 주에 병원체별 행이 3개)
+   해결: 하나만 선택
+        sub = df[df["Pathogen_Target"]=="Influenza A virus"]
+
+
+[ 오류는 없지만 잘못 학습되는 것 ]
+
+② 지점별 관측 기간 다름 → 빈 주
+   증상: 지점이 시기마다 들락날락 (신규·중단)
+   해결:
+        ts = ts.convert_frequency(freq="W-SAT")   # 빈 주 채움
+   확인:
+        sub.groupby("item_id")["timestamp"].agg(["min","max","size"])
+
+③ 병원체별 값 범위·계절성 다름
+   증상: 3종 함께 학습 시 스케일 상충
+   해결: 병원체 하나씩 학습해 비교
+        - Influenza A: 겨울 유행 뚜렷 (권장)
+        - SARS-CoV-2: 관측 길지만 대유행기 단절
+        - RSV: 매년 8월부터 포함 → 여름 데이터 적음
+
+④ 지점 간 규모 차이 (Population_Served)
+   증상: 담당 인구 다름 → WVAL 절대 수준 차이
+   해결: 규모 비슷한 지점끼리 묶어 비교, 또는 공변량 활용
+        # Population_Served를 정적 공변량으로 쓸 수 있음
+
+
+[ EDA / 판단 참고 ]
+
+⑤ Site_WVAL_Category(5등급)를 target으로 삼으면 분류 문제
+   → 회귀(Site_WVAL) vs 분류(Category) 중 선택
+⑥ 계절성: 겨울 유행 연 주기. SeasonalNaive 순위 확인
+⑦ 축소본은 위스콘신·캘리포니아에 지점 집중
+   → 같은 주 지점끼리 유행 시점 유사 → 전역 모델 유리한지 확인
+⑧ 매주 갱신·과거값 수정됨 → 배포 시점 기록
+   ※ 이 파일 기준: 2026-07-18까지
+
+
+----------------------------------------------------------------
+6. 출처
+----------------------------------------------------------------
+
+- CDC Open Data, ID atcp-73re
+  https://data.cdc.gov/Public-Health-Surveillance/
+    CDC-Wastewater-Viral-Activity-Level-for-SARS-CoV-2/atcp-73re
+- 출처: CDC National Wastewater Surveillance System (NWSS)
+- 라이선스: U.S. Government Work (제약 없음)
+
+- ■ 축소본 안내
+  원본 519,860행(1,760지점)에서 세 병원체 모두 관측이 긴
+  지점 40개를 선별 (23,301행). WVAL·인구는 숫자로 변환 완료.
+  전체가 필요하면 data.cdc.gov에서 원본을 받을 것.
+
+================================================================

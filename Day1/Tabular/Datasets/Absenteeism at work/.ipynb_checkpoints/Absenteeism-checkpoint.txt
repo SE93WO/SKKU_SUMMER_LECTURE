@@ -1,0 +1,157 @@
+================================================================
+실습 데이터 소개
+직장 결근 시간 예측 (Absenteeism at Work)
+================================================================
+
+2026 하계 AI 특강 · Day 1 AutoML
+Applied AI & Computer Vision Lab · Sungkyunkwan University
+
+
+----------------------------------------------------------------
+1. 개요
+----------------------------------------------------------------
+
+- 내용: 브라질 택배회사 직원의 실제 결근 기록
+- 출처: UCI #445 (2007.7 ~ 2010.7 수집)
+- 규모: 740행 · 21열 · 직원 36명 · 결측 없음
+- 유형: 회귀 (결근 시간 예측)
+- 예측 대상: Absenteeism time in hours (결근 시간)
+
+
+----------------------------------------------------------------
+2. 왜 이 문제인가
+----------------------------------------------------------------
+
+- 결근은 인력 운영 비용에 직결 (물류·의료·건설 등)
+- 어떤 조건에서 결근이 길어지는지 알면 인력·근무 계획에 활용
+- 강의 사례 연결: 16p 암환자 생존 예측 (적은 데이터·여러 변수)
+- 실제 기업 기록 (IBM HR Attrition과 달리 합성 아님)
+
+
+----------------------------------------------------------------
+3. 컬럼 구성
+----------------------------------------------------------------
+
+[ 식별 ]
+- ID                  직원 번호 (1~36, 반복 등장)
+
+[ 결근 사유 ]
+- Reason for absence  ICD 질병분류 코드 (0~28)
+                      ※ 숫자지만 범주 — 1~21 질병, 22~28 행정 사유
+
+[ 시점 — 숫자지만 범주 ]
+- Month of absence    결근 월 (0~12)
+- Day of the week     요일 (2=월 ~ 6=금)
+- Seasons             계절 (1=여름 2=가을 3=겨울 4=봄, 남반구)
+
+[ 근무 조건 — 수치 ]
+- Transportation expense           월 교통비
+- Distance from Residence to Work  통근 거리 (km)
+- Service time                     근속 연수
+- Work load Average/day            일평균 업무량 (컬럼명 끝 공백 주의)
+- Hit target                       목표 달성률 (%)
+- Disciplinary failure             징계 여부 (0/1)
+
+[ 개인 특성 ]
+- Age                 나이
+- Education           학력 (1=고졸 ~ 4=석박사)
+- Son                 자녀 수
+- Social drinker      음주 여부 (0/1)
+- Social smoker       흡연 여부 (0/1)
+- Pet                 반려동물 수
+- Weight / Height / Body mass index   체중·신장·BMI
+
+[ 예측 대상 ]
+- Absenteeism time in hours   결근 시간
+
+
+----------------------------------------------------------------
+4. 불러오기
+----------------------------------------------------------------
+
+- 구분자가 세미콜론(;) — sep 지정 필수 (안 하면 1열로 읽힘)
+- 원본은 zip 제공 → 미리 풀어 CSV로 배포
+
+    import pandas as pd
+
+    df = pd.read_csv("Absenteeism_at_work.csv", sep=";")
+
+    print(df.shape)          # (740, 21)
+    df.head()
+
+- 컬럼명 정리 (공백·슬래시 제거, 권장)
+
+    df.columns = (df.columns
+                    .str.strip()
+                    .str.replace("/", "_", regex=False)
+                    .str.replace(" ", "_", regex=False))
+
+
+----------------------------------------------------------------
+5. 주의
+----------------------------------------------------------------
+
+[ 오류가 나는 것 ]
+
+① 세미콜론 구분자
+   증상: sep 없이 읽으면 전체가 1열이 되어 학습 불가
+   해결:
+        df = pd.read_csv("Absenteeism_at_work.csv", sep=";")
+
+② 컬럼명 끝 공백·슬래시 ("Work load Average/day ")
+   증상: label 지정·컬럼 참조 시 오타 유발
+   해결:
+        df.columns = (df.columns
+                        .str.strip()
+                        .str.replace("/", "_", regex=False)
+                        .str.replace(" ", "_", regex=False))
+
+
+[ 오류는 없지만 잘못 학습되는 것 ]
+
+③ 숫자로 코딩된 범주 (가장 중요)
+   증상: Reason for absence, Month, Day of the week, Seasons가
+         숫자라 AutoGluon이 수치로 인식
+         → "28번 사유가 1번의 28배"로 잘못 학습
+   해결:
+        cat = ["Reason_for_absence", "Month_of_absence",
+               "Day_of_the_week", "Seasons"]
+        for c in cat:
+            df[c] = df[c].astype("category")
+   참고: 0/1 이진 변수(Disciplinary failure 등)는 자동 인식됨
+
+④ 같은 직원이 여러 번 등장 (ID 36명 / 740행)
+   증상: 무작위 분할 시 같은 직원이 train·test 양쪽에
+         → 성능이 실제보다 부풀려짐
+   해결 (ID 단위 분할):
+        ids = df["ID"].unique()
+        train_ids = pd.Series(ids).sample(frac=0.8, random_state=42)
+        train_data = df[df["ID"].isin(train_ids)]
+        test_data  = df[~df["ID"].isin(train_ids)]
+
+
+[ EDA / 판단 참고 ]
+
+⑤ 결근 시간(target) 0인 행 존재
+   → 실제 결근이 아닌 기록일 수 있음. 제외 검토:
+        df = df[df["Absenteeism_time_in_hours"] > 0]
+
+⑥ target 분포가 한쪽으로 치우침
+   → 리포트에서 확인. 필요 시 로그 변환:
+        import numpy as np
+        df["log_time"] = np.log1p(df["Absenteeism_time_in_hours"])
+
+⑦ 결측 없음 → 결측 처리 불필요
+
+
+----------------------------------------------------------------
+6. 출처
+----------------------------------------------------------------
+
+- UCI #445 "Absenteeism at work"
+  https://archive.ics.uci.edu/dataset/445/absenteeism+at+work
+- 원 논문: Martiniano et al. (2012)
+- Kaggle 미러: loganalive/absenteeism-at-work-an-uci-dataset
+- 라이선스: CC BY 4.0
+
+================================================================
