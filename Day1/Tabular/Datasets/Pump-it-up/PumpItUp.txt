@@ -52,14 +52,14 @@ Applied AI & Computer Vision Lab · Sungkyunkwan University
 
 - 예측 변수(X)와 정답(y)이 별도 파일 → id 기준 병합
 
-    import pandas as pd
+import pandas as pd
+import numpy as np
 
-    X = pd.read_csv("X_train_raw.csv")
-    y = pd.read_csv("y_train_raw.csv")
-    df = X.merge(y, on="id")          # (59400, 41)
-
-    print(df.shape)
-    df.head()
+X = pd.read_csv("training_Set_values.csv")
+y = pd.read_csv("training_Set_labels.csv")     # 정답 파일 (별도)
+df = X.merge(y, on="id")
+print(df.shape)          # (59400, 41)
+df.head()
 
 
 ----------------------------------------------------------------
